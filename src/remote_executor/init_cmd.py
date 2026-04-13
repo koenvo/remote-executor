@@ -38,8 +38,8 @@ SKILL_NAME = "remote-execution"
 
 def run_init(
     host: str | None = None,
-    backend: str = "modal",
-    gpu: str = "T4",
+    backend: str | None = None,
+    gpu: str | None = None,
     project_dir: Path | None = None,
 ) -> None:
     project_dir = (project_dir or Path.cwd()).resolve()
@@ -54,7 +54,15 @@ def run_init(
     # --- project name ---
     name = project_dir.name.lower().replace(" ", "-").replace("_", "-")
 
-    # --- build the starter profile (non-interactive when backend/gpu supplied) ---
+    # --- backend selection (prompt if not supplied) ---
+    if backend is None:
+        backend = Prompt.ask(
+            "Which backend?",
+            choices=["modal", "ssh-docker"],
+            default="modal",
+        )
+
+    # --- build the starter profile ---
     if backend == "ssh-docker":
         if not host:
             host = _prompt_for_host()
@@ -62,10 +70,16 @@ def run_init(
         profile = Profile(
             backend="ssh-docker",
             host_alias=host,
-            gpus=gpu if gpu != "none" else "all",
+            gpus=gpu or "all",
             sync_ignore=_seed_ignores(project_dir),
         )
     elif backend == "modal":
+        if not gpu:
+            gpu = Prompt.ask(
+                "Modal GPU type",
+                choices=["T4", "L4", "L40S", "A10G", "A100", "H100", "H200"],
+                default="T4",
+            )
         profile_name = f"modal-{gpu.lower()}"
         profile = Profile(backend="modal", gpu=gpu)
     else:

@@ -34,12 +34,12 @@ DirOption = typer.Option(None, "--dir", "-d", help="Project directory (default: 
 
 @app.command()
 def init(
-    host: Optional[str] = typer.Option(None, "--host", "-h"),
-    backend: str = typer.Option("ssh-docker", "--backend", "-b"),
-    gpu: str = typer.Option("all", "--gpu", "-g"),
+    host: Optional[str] = typer.Option(None, "--host", "-h", help="SSH host alias (ssh-docker backend)"),
+    backend: Optional[str] = typer.Option(None, "--backend", "-b", help="Backend: modal or ssh-docker (prompted if omitted)"),
+    gpu: Optional[str] = typer.Option(None, "--gpu", "-g", help="GPU type (Modal) or --gpus value (ssh-docker)"),
     project_dir: Optional[Path] = DirOption,
 ) -> None:
-    """Interactive project setup. Writes .remote-executor.toml, .claude/settings.json, CLAUDE.md."""
+    """Interactive project setup. Writes .remote-executor.toml, .mcp.json, and a Claude Code skill."""
     from remote_executor.init_cmd import run_init
 
     run_init(host=host, backend=backend, gpu=gpu, project_dir=project_dir)

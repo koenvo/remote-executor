@@ -1,13 +1,19 @@
-"""Interactive project setup: `remote-executor init`.
+"""Project setup: `remote-executor init`.
 
-Writes .remote-executor.toml with a single-profile starter config,
-plus .claude/settings.json and a CLAUDE.md snippet.
+Writes everything a project needs in one shot:
+- `.remote-executor.toml` — a single starter profile
+- `.mcp.json` at the project root — the canonical Claude Code project-scoped
+  MCP server registration
+- `.claude/skills/remote-execution/SKILL.md` — a self-contained skill that
+  teaches Claude when to use `remote_bash`. Doesn't touch the project's
+  existing CLAUDE.md.
+
+One command, no manual stitching required.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import typer
@@ -25,14 +31,13 @@ from remote_executor.config import (
 
 console = Console(stderr=True)
 
-CLAUDE_MARKER_BEGIN = "<!-- remote-executor:begin -->"
-CLAUDE_MARKER_END = "<!-- remote-executor:end -->"
+SKILL_NAME = "remote-execution"
 
 
 def run_init(
     host: str | None = None,
-    backend: str = "ssh-docker",
-    gpu: str = "all",
+    backend: str = "modal",
+    gpu: str = "T4",
     project_dir: Path | None = None,
 ) -> None:
     project_dir = (project_dir or Path.cwd()).resolve()
@@ -41,42 +46,28 @@ def run_init(
         if not Confirm.ask(f"{CONFIG_FILENAME} already exists. Overwrite?", default=False):
             raise typer.Abort()
 
-    # --- dockerfile ---
-    dockerfile = "Dockerfile"
-    candidates = list(project_dir.glob("Dockerfile*"))
-    if candidates:
-        names = [c.name for c in candidates]
-        if len(names) == 1:
-            dockerfile = names[0]
-        else:
-            dockerfile = Prompt.ask("Which Dockerfile?", default=names[0], choices=names)
-    else:
-        dockerfile = Prompt.ask("Dockerfile path (relative)", default="Dockerfile")
+    # --- Dockerfile detection ---
+    dockerfile = _detect_dockerfile(project_dir)
 
-    default_name = project_dir.name.lower().replace(" ", "-")
-    name = Prompt.ask("Project name", default=default_name)
+    # --- project name ---
+    name = project_dir.name.lower().replace(" ", "-").replace("_", "-")
 
-    # --- single starter profile ---
+    # --- build the starter profile (non-interactive when backend/gpu supplied) ---
     if backend == "ssh-docker":
         if not host:
-            available = _discover_ssh_hosts()
-            if available:
-                console.print("[dim]Available SSH hosts:[/]", ", ".join(available[:20]))
-            host = Prompt.ask("SSH host alias", default=available[0] if available else None)
-        assert host is not None
+            host = _prompt_for_host()
         profile_name = host
         profile = Profile(
             backend="ssh-docker",
             host_alias=host,
-            gpus=gpu if gpu != "none" else None,
+            gpus=gpu if gpu != "none" else "all",
             sync_ignore=_seed_ignores(project_dir),
         )
     elif backend == "modal":
-        gpu_type = gpu if gpu != "all" else Prompt.ask("Modal GPU type", default="T4")
-        profile_name = f"modal-{gpu_type.lower()}"
-        profile = Profile(backend="modal", gpu=gpu_type)
+        profile_name = f"modal-{gpu.lower()}"
+        profile = Profile(backend="modal", gpu=gpu)
     else:
-        raise typer.BadParameter(f"Unknown backend: {backend}")
+        raise typer.BadParameter(f"Unknown backend: {backend}. Use 'ssh-docker' or 'modal'.")
 
     cfg = ProjectConfig(
         project=ProjectSection(
@@ -87,14 +78,35 @@ def run_init(
     )
 
     toml_path = write(project_dir, cfg)
-    console.print(f"[green]Wrote {toml_path.relative_to(project_dir)}[/] (profile: {profile_name})")
+    console.print(f"[green]✓[/] {toml_path.relative_to(project_dir)} (profile: {profile_name})")
 
-    _write_claude_settings(project_dir)
-    _write_claude_md(project_dir, cfg, profile_name, profile)
+    _write_mcp_json(project_dir, profile_name)
+    _write_skill(project_dir, cfg, profile_name, profile)
 
     console.print(
-        f"\n[bold green]Init complete.[/] Next: `remote-executor doctor`, then `remote-executor up`."
+        f"\n[bold green]Init complete.[/] Next:\n"
+        f"  [bold]remote-executor doctor[/]\n"
+        f"  [bold]remote-executor up[/]\n"
+        f"  [bold]claude[/]  (launch Claude Code in this directory)"
     )
+
+
+def _detect_dockerfile(project_dir: Path) -> str:
+    candidates = list(project_dir.glob("Dockerfile*"))
+    if len(candidates) == 1:
+        return candidates[0].name
+    if len(candidates) > 1:
+        names = [c.name for c in candidates]
+        return Prompt.ask("Which Dockerfile?", default=names[0], choices=names)
+    console.print("[yellow]No Dockerfile found in project root.[/]")
+    return Prompt.ask("Dockerfile path (relative)", default="Dockerfile")
+
+
+def _prompt_for_host() -> str:
+    available = _discover_ssh_hosts()
+    if available:
+        console.print("[dim]Available SSH hosts:[/]", ", ".join(available[:20]))
+    return Prompt.ask("SSH host alias", default=available[0] if available else None)
 
 
 def _discover_ssh_hosts() -> list[str]:
@@ -127,69 +139,92 @@ def _seed_ignores(project_dir: Path) -> list[str]:
     return ignores
 
 
-def _write_claude_settings(project_dir: Path) -> None:
-    settings_dir = project_dir / ".claude"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-    settings_path = settings_dir / "settings.json"
+def _write_mcp_json(project_dir: Path, profile_name: str) -> None:
+    """Write `.mcp.json` at the project root — Claude Code's canonical location
+    for project-scoped MCP server registration (committed with the project)."""
+    mcp_path = project_dir / ".mcp.json"
 
     stanza = {
-        "permissions": {"deny": ["Bash"]},
         "mcpServers": {
             "remote-executor": {
                 "command": "remote-executor",
                 "args": ["mcp"],
+                "env": {
+                    "REMOTE_EXECUTOR_PROFILE": profile_name,
+                },
             },
         },
     }
 
-    if settings_path.exists():
+    if mcp_path.exists():
         try:
-            existing = json.loads(settings_path.read_text())
+            existing = json.loads(mcp_path.read_text())
         except json.JSONDecodeError:
             existing = {}
 
-        if "permissions" in existing or "mcpServers" in existing:
-            console.print(
-                f"[yellow]{settings_path.relative_to(project_dir)} already has permissions or mcpServers.[/]"
-            )
-            console.print("[yellow]Merge the following manually:[/]")
-            console.print_json(json.dumps(stanza, indent=2))
-            return
-
-        existing.update(stanza)
-        settings_path.write_text(json.dumps(existing, indent=2) + "\n")
+        existing_servers = existing.get("mcpServers", {})
+        if "remote-executor" in existing_servers:
+            console.print(f"[dim]✓[/] {mcp_path.name} already has remote-executor (updating)")
+        existing_servers["remote-executor"] = stanza["mcpServers"]["remote-executor"]
+        existing["mcpServers"] = existing_servers
+        mcp_path.write_text(json.dumps(existing, indent=2) + "\n")
     else:
-        settings_path.write_text(json.dumps(stanza, indent=2) + "\n")
+        mcp_path.write_text(json.dumps(stanza, indent=2) + "\n")
+
+    console.print(f"[green]✓[/] {mcp_path.name} (MCP server registered)")
 
 
-def _write_claude_md(
+def _write_skill(
     project_dir: Path, cfg: ProjectConfig, profile_name: str, profile: Profile
 ) -> None:
-    claude_md = project_dir / "CLAUDE.md"
+    """Write a self-contained skill at .claude/skills/remote-execution/SKILL.md.
+    Doesn't touch CLAUDE.md — safe to re-run on projects with existing docs."""
+    skill_dir = project_dir / ".claude" / "skills" / SKILL_NAME
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path = skill_dir / "SKILL.md"
 
     if profile.backend == "ssh-docker":
         backend_desc = f"SSH+Docker on `{profile.host_alias}`"
     else:
-        backend_desc = f"Modal (gpu={profile.gpu})"
+        backend_desc = f"Modal sandbox (gpu={profile.gpu})"
 
-    snippet = f"""{CLAUDE_MARKER_BEGIN}
-## Remote Execution
+    content = f"""---
+name: {SKILL_NAME}
+description: Use when running commands that need the project's runtime environment (GPU, CUDA, ffmpeg/NVENC, uv/python entry points, tests). This project runs on a remote environment via the remote-executor MCP server — local Bash will fail for anything that touches the toolchain.
+---
 
-This project runs on {backend_desc} (profile: `{profile_name}`).
+# Remote execution
 
-1. **No local shell.** The built-in `Bash` tool is denied. Use `mcp__remote-executor__remote_bash` for all commands.
-2. **Workspace is mirrored.** The local project directory is synced to `{cfg.project.workdir}` inside the environment. File edits via `Read`/`Edit`/`Write` are live — no rebuild needed.
-3. **Dockerfile changes** require an explicit `remote-executor rebuild`.
-4. **Switch profiles** by running `remote-executor up --profile <name>` (see `.remote-executor.toml` for available profiles).
-{CLAUDE_MARKER_END}"""
+This project runs on **{backend_desc}** (active profile: `{profile_name}`). The local machine does not have the architecture this project needs, so shell commands that touch the toolchain must run on the remote environment.
 
-    if claude_md.exists():
-        content = claude_md.read_text()
-        if CLAUDE_MARKER_BEGIN in content:
-            pattern = re.escape(CLAUDE_MARKER_BEGIN) + r".*?" + re.escape(CLAUDE_MARKER_END)
-            content = re.sub(pattern, snippet, content, flags=re.DOTALL)
-            claude_md.write_text(content)
-        else:
-            claude_md.write_text(content.rstrip() + "\n\n" + snippet + "\n")
-    else:
-        claude_md.write_text(snippet + "\n")
+## Which tool to use
+
+**Use `mcp__remote-executor__remote_bash`** for any command that needs the remote environment:
+- Running `uv`, `python`, or the project's entry points
+- `ffmpeg` / `ffprobe` / NVENC
+- `nvidia-smi` and other CUDA tools
+- Tests that exercise the project's runtime dependencies
+- Anything that imports GPU-only packages (PyNvVideoCodec, torch with CUDA, etc.)
+
+**Local `Bash` is still fine** for things that don't need the remote environment: `git`, reading small files, basic filesystem operations. When in doubt, prefer `remote_bash`.
+
+## How the workspace sync works
+
+- The local project directory is mirrored to `{cfg.project.workdir}` inside the remote environment.
+- File edits via `Read` / `Edit` / `Write` are visible to the next `remote_bash` call without a rebuild.
+- Changes to `Dockerfile` or system dependencies require `remote-executor rebuild` — ask the user to run it.
+- To retrieve files from environment-local volumes (e.g. output directories that aren't part of the sync), use `mcp__remote-executor__pull`.
+
+## Switching profiles
+
+This project may define multiple profiles in `.remote-executor.toml` (e.g. `modal-t4`, `modal-l40s`, an ssh-docker host). To switch, ask the user to run:
+
+```
+remote-executor down && remote-executor up --profile <name>
+```
+
+and restart the Claude Code session so the MCP server picks up the new `REMOTE_EXECUTOR_PROFILE` env var.
+"""
+
+    skill_path.write_text(content)
+    console.print(f"[green]✓[/] {skill_path.relative_to(project_dir)} (skill for assistant)")

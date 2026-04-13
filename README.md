@@ -2,6 +2,8 @@
 
 **Run Claude Code on a machine that doesn't have the architecture your POC needs.**
 
+https://github.com/user-attachments/assets/5407ba6e-8e85-4edb-8a7c-f22b5917e674
+
 Your laptop doesn't have an NVIDIA GPU. The POC you're working on needs CUDA, NVENC, or a specific Linux kernel. You could SSH into a remote machine manually (and lose Claude Code's local editing experience), or you could run Claude Code on the remote box (and lose your local files, your editor setup, your git workflow). Neither is great.
 
 `remote-executor` is a tiny MCP server + CLI that bridges the gap: **Claude Code edits files locally, but every shell command runs inside a remote execution environment**. Source edits flow to the remote automatically. Commands stream output back. You scp nothing. You keep your laptop.

@@ -69,7 +69,15 @@ class McpConfig(BaseModel):
     max_timeout_sec: int = 3600
 
 
+class MetaSection(BaseModel):
+    """Metadata about which remote-executor version set up this project.
+    Used to detect stale configs after a tool upgrade."""
+
+    tool_version: str
+
+
 class ProjectConfig(BaseModel):
+    meta: MetaSection | None = None
     project: ProjectSection
     profiles: dict[str, Profile]
     mcp: McpConfig = Field(default_factory=McpConfig)
@@ -95,14 +103,36 @@ class ProjectConfig(BaseModel):
         return f"rex-{_slug(self.project.name)}-{_slug(profile_name)}:latest"
 
 
-def load(project_dir: Path) -> ProjectConfig:
+def load(project_dir: Path, *, check_version: bool = True) -> ProjectConfig:
     path = project_dir / CONFIG_FILENAME
     if not path.exists():
         raise FileNotFoundError(
             f"No {CONFIG_FILENAME} in {project_dir}. Run `remote-executor init` first."
         )
     data = tomllib.loads(path.read_text())
-    return ProjectConfig.model_validate(data)
+    cfg = ProjectConfig.model_validate(data)
+    if check_version:
+        _warn_if_version_mismatch(cfg)
+    return cfg
+
+
+def _warn_if_version_mismatch(cfg: ProjectConfig) -> None:
+    """Print a one-line warning to stderr if the config was written by a
+    different remote-executor version than the one currently running."""
+    from remote_executor import __version__
+
+    stored = cfg.meta.tool_version if cfg.meta else None
+    if stored is None:
+        return
+    if stored == __version__:
+        return
+    import sys
+
+    print(
+        f"warning: .remote-executor.toml was written by remote-executor {stored}, "
+        f"you're running {__version__}. Re-run `remote-executor init` if behavior is unexpected.",
+        file=sys.stderr,
+    )
 
 
 def write(project_dir: Path, config: ProjectConfig) -> Path:

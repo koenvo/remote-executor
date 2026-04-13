@@ -6,6 +6,7 @@ import pytest
 
 from remote_executor.config import (
     CONFIG_FILENAME,
+    MetaSection,
     Profile,
     ProjectConfig,
     ProjectSection,
@@ -104,6 +105,28 @@ class TestRoundTrip:
     def test_load_missing_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError, match="remote-executor init"):
             load(tmp_path)
+
+    def test_tool_version_roundtrip(self, tmp_path: Path) -> None:
+        original = _cfg(meta=MetaSection(tool_version="9.9.9"))
+        write(tmp_path, original)
+        loaded = load(tmp_path, check_version=False)
+        assert loaded.meta is not None
+        assert loaded.meta.tool_version == "9.9.9"
+
+    def test_version_mismatch_warns(self, tmp_path: Path, capsys) -> None:
+        original = _cfg(meta=MetaSection(tool_version="0.0.1-old"))
+        write(tmp_path, original)
+        load(tmp_path)  # check_version=True by default
+        captured = capsys.readouterr()
+        assert "warning" in captured.err.lower()
+        assert "0.0.1-old" in captured.err
+
+    def test_no_version_no_warning(self, tmp_path: Path, capsys) -> None:
+        original = _cfg()  # no meta
+        write(tmp_path, original)
+        load(tmp_path)
+        captured = capsys.readouterr()
+        assert "warning" not in captured.err.lower()
 
 
 class TestBackendFactory:

@@ -20,9 +20,11 @@ import typer
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
+from remote_executor import __version__
 from remote_executor.config import (
     CONFIG_FILENAME,
     McpConfig,
+    MetaSection,
     Profile,
     ProjectConfig,
     ProjectSection,
@@ -70,6 +72,7 @@ def run_init(
         raise typer.BadParameter(f"Unknown backend: {backend}. Use 'ssh-docker' or 'modal'.")
 
     cfg = ProjectConfig(
+        meta=MetaSection(tool_version=__version__),
         project=ProjectSection(
             name=name, dockerfile=dockerfile, default_profile=profile_name
         ),

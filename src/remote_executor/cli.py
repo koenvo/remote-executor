@@ -125,6 +125,32 @@ def profiles(
 
 
 @app.command()
+def version(
+    project_dir: Optional[Path] = DirOption,
+) -> None:
+    """Show the installed tool version and, if a project is configured, the
+    version that wrote its .remote-executor.toml."""
+    from remote_executor import __version__
+    from remote_executor.config import load
+
+    typer.echo(f"remote-executor {__version__}")
+
+    target = (project_dir or Path.cwd()).resolve()
+    try:
+        cfg = load(target, check_version=False)
+    except FileNotFoundError:
+        return
+
+    stored = cfg.meta.tool_version if cfg.meta else None
+    if stored is None:
+        typer.echo(f"project at {target}: (no version recorded — pre-0.1.0 config)")
+    elif stored == __version__:
+        typer.echo(f"project at {target}: {stored} [match]")
+    else:
+        typer.echo(f"project at {target}: {stored} [outdated — re-run `remote-executor init`]")
+
+
+@app.command()
 def mcp() -> None:
     """Start the MCP stdio server (used by Claude Code)."""
     from remote_executor.mcp_server.server import serve

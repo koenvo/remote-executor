@@ -47,7 +47,7 @@ def mutagen_current_symlink() -> Path:
 
 def host_state_dir(key: str) -> Path:
     """Per-(backend, profile) state dir. `key` is a free-form identifier
-    like 'ssh-docker:teamtv-gpu:default' or 'modal:modal-t4'."""
+    like 'ssh-docker:office-box:default' or 'modal:modal-t4'."""
     p = state_dir() / "instances" / _slug(key)
     p.mkdir(parents=True, exist_ok=True)
     return p

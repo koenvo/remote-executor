@@ -22,9 +22,9 @@ def _cfg(**overrides) -> ProjectConfig:
         profiles={
             "modal-t4": Profile(backend="modal", gpu="T4", timeout_minutes=30),
             "modal-h200": Profile(backend="modal", gpu="H200", timeout_minutes=60),
-            "teamtv": Profile(
+            "office-box": Profile(
                 backend="ssh-docker",
-                host_alias="teamtv-gpu",
+                host_alias="office-box-host",
                 gpus="all",
                 memory="16g",
             ),
@@ -46,12 +46,12 @@ class TestContainerName:
     def test_includes_profile_name(self, tmp_path: Path) -> None:
         cfg = _cfg()
         assert "modal-t4" in cfg.container_name(tmp_path, "modal-t4")
-        assert "teamtv" in cfg.container_name(tmp_path, "teamtv")
+        assert "office-box" in cfg.container_name(tmp_path, "office-box")
 
     def test_image_tag_per_profile(self) -> None:
         cfg = _cfg()
         assert cfg.image_tag("modal-t4") == "rex-test-project-modal-t4:latest"
-        assert cfg.image_tag("teamtv") == "rex-test-project-teamtv:latest"
+        assert cfg.image_tag("office-box") == "rex-test-project-office-box:latest"
 
 
 class TestGetProfile:
@@ -64,10 +64,10 @@ class TestGetProfile:
 
     def test_named_profile(self) -> None:
         cfg = _cfg()
-        name, p = cfg.get_profile("teamtv")
-        assert name == "teamtv"
+        name, p = cfg.get_profile("office-box")
+        assert name == "office-box"
         assert p.backend == "ssh-docker"
-        assert p.host_alias == "teamtv-gpu"
+        assert p.host_alias == "office-box-host"
 
     def test_unknown_profile_raises(self) -> None:
         cfg = _cfg()
@@ -98,8 +98,8 @@ class TestRoundTrip:
         loaded = load(tmp_path)
         assert loaded.project.name == "test-project"
         assert loaded.project.default_profile == "modal-t4"
-        assert set(loaded.profiles.keys()) == {"modal-t4", "modal-h200", "teamtv"}
-        assert loaded.profiles["teamtv"].host_alias == "teamtv-gpu"
+        assert set(loaded.profiles.keys()) == {"modal-t4", "modal-h200", "office-box"}
+        assert loaded.profiles["office-box"].host_alias == "office-box-host"
         assert loaded.profiles["modal-h200"].gpu == "H200"
 
     def test_load_missing_raises(self, tmp_path: Path) -> None:
@@ -135,7 +135,7 @@ class TestBackendFactory:
         from remote_executor.backends.ssh_docker import SshDockerExecutor
 
         cfg = _cfg()
-        executor = create_executor(tmp_path, cfg, profile_name="teamtv")
+        executor = create_executor(tmp_path, cfg, profile_name="office-box")
         assert isinstance(executor, SshDockerExecutor)
 
     def test_modal_creates_with_default(self, tmp_path: Path) -> None:

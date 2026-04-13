@@ -91,6 +91,7 @@ class SshDockerExecutor(Executor):
             remote_host=host,
             remote_path=remote_wd,
             ignores=ignores,
+            mode=profile.sync_mode,
         )
         console.print(f"[dim]Mutagen session: {session_id}[/]")
         mutagen.sync_flush(session_id, timeout=120.0)

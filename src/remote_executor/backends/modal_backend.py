@@ -23,8 +23,21 @@ from remote_executor.executor import Executor
 console = Console(stderr=True)
 
 DEFAULT_IGNORE = {
-    ".git", "__pycache__", ".venv", "node_modules", ".DS_Store",
-    ".idea", ".vscode", ".pytest_cache", "target", "dist", "build",
+    # VCS
+    ".git", ".hg", ".svn",
+    # Python
+    "__pycache__", ".venv", "venv", "env",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+    # Node
+    "node_modules",
+    # Rust
+    "target",
+    # Build artifacts
+    "dist", "build", ".next", ".nuxt",
+    # IDE / OS
+    ".idea", ".vscode", ".DS_Store", "Thumbs.db",
+    # Caches
+    ".cache", ".uv", ".pip",
 }
 
 
@@ -44,6 +57,21 @@ def _should_ignore(path: Path, ignores: set[str]) -> bool:
         if part in ignores:
             return True
     return False
+
+
+def _extra_ignores_from_profile(sync_ignore: list[str]) -> set[str]:
+    """Extract plain directory/file names from mutagen glob patterns so the
+    Modal backend (which uses simple path-component matching) can honor the
+    same exclusions the user configured for the mutagen sync."""
+    extras: set[str] = set()
+    for pattern in sync_ignore:
+        # Strip trailing slashes, leading **/  /  , glob markers
+        stripped = pattern.strip().rstrip("/")
+        while stripped.startswith(("**/", "*/")):
+            stripped = stripped.split("/", 1)[1] if "/" in stripped else ""
+        if stripped and "*" not in stripped and "/" not in stripped:
+            extras.add(stripped)
+    return extras
 
 
 class ModalExecutor(Executor):
@@ -114,9 +142,13 @@ class ModalExecutor(Executor):
             )
         return sb
 
+    def _effective_ignores(self) -> set[str]:
+        """DEFAULT_IGNORE + any plain dir names extracted from profile.sync_ignore."""
+        return DEFAULT_IGNORE | _extra_ignores_from_profile(self._profile.sync_ignore)
+
     def _push_workspace(self, sb) -> int:
         """Push all project files into the sandbox at /workspace (sync version for up())."""
-        ignores = DEFAULT_IGNORE.copy()
+        ignores = self._effective_ignores()
         count = 0
         for local_file, remote_path in self._walk_files(ignores):
             try:
@@ -128,7 +160,7 @@ class ModalExecutor(Executor):
 
     async def _push_workspace_async(self, sb) -> int:
         """Push all project files into the sandbox (async version for exec_command())."""
-        ignores = DEFAULT_IGNORE.copy()
+        ignores = self._effective_ignores()
         count = 0
         for local_file, remote_path in self._walk_files(ignores):
             try:
@@ -245,6 +277,12 @@ class ModalExecutor(Executor):
         # Push latest workspace files before executing
         await self._push_workspace_async(sb)
 
+        # Drop a marker so we can find files modified during the exec and
+        # sync them back to the laptop afterwards. Gives the user a
+        # "same /workspace, different compute" experience.
+        marker = "/tmp/rex-exec-marker"
+        await sb.filesystem.write_text.aio(marker, "")
+
         full_cmd = command
         if cwd:
             cwd_clean = cwd.lstrip("/")
@@ -264,7 +302,54 @@ class ModalExecutor(Executor):
                 await on_line("stderr", text)
 
         await process.wait.aio()
-        return process.returncode
+        exit_code = process.returncode
+
+        # Pull files that were created or modified during the exec
+        try:
+            await self._pull_changed_files(sb, marker)
+        except Exception as e:
+            if on_line is not None:
+                await on_line("stderr", f"[rex] post-exec sync failed: {e}")
+
+        return exit_code
+
+    async def _pull_changed_files(self, sb, marker: str) -> int:
+        """Find files under workdir that were modified after `marker` and
+        copy them back to the local project dir. Returns the count pulled."""
+        find_cmd = [
+            "find",
+            self.workdir,
+            "-type", "f",
+            "-newer", marker,
+            "-print0",
+        ]
+        proc = await sb.exec.aio(*find_cmd)
+        data = b""
+        async for chunk in proc.stdout:
+            data += chunk.encode() if isinstance(chunk, str) else chunk
+        await proc.wait.aio()
+
+        if not data:
+            return 0
+
+        remote_paths = [p for p in data.split(b"\x00") if p]
+        ignores = self._effective_ignores()
+        count = 0
+        for raw in remote_paths:
+            remote_path = raw.decode("utf-8", errors="replace")
+            if not remote_path.startswith(self.workdir + "/"):
+                continue
+            rel = Path(remote_path[len(self.workdir) + 1:])
+            if _should_ignore(rel, ignores):
+                continue
+            local_path = self._project_dir / rel
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                await sb.filesystem.copy_to_local.aio(remote_path, str(local_path))
+                count += 1
+            except Exception:
+                pass
+        return count
 
     def pull_file(self, src: str, dest: str) -> Path:
         sb = self._ensure_sandbox()

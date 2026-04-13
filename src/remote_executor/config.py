@@ -44,7 +44,7 @@ class Profile(BaseModel):
     idle_ttl_minutes: int = 30
     sync_remote_root: str = "~/.remote-executor/projects"
     sync_ignore: list[str] = Field(default_factory=list)
-    sync_mode: str = "two-way-safe"
+    sync_mode: str = "one-way-safe"
     volumes: list[VolumeMount] = Field(default_factory=list)
 
     # --- modal fields ---

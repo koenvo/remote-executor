@@ -259,6 +259,53 @@ class SshDockerExecutor(Executor):
 
     # -- pull ---------------------------------------------------------------
 
+    def sync_down(self, path: str) -> tuple[int, int]:
+        """Pull `path` (file or dir, relative to workdir) from the remote
+        workspace back to the matching local project path. Since the mutagen
+        target dir on the remote host IS the container's /workspace bind
+        mount, we can scp straight from the host filesystem."""
+        st = state.load(self._state_key)
+        if not st.remote_workdir:
+            raise RuntimeError("No remote workspace recorded. Run `remote-executor up` first.")
+
+        # Normalize: strip leading `/workspace/` if the user passed an absolute
+        # in-container path; otherwise treat as relative to the workdir.
+        rel = path
+        if path.startswith(self.workdir + "/"):
+            rel = path[len(self.workdir) + 1:]
+        elif path.startswith("/"):
+            raise ValueError(
+                f"Absolute path {path!r} is outside the workspace ({self.workdir}). "
+                "Use a path under workdir or a relative path."
+            )
+        rel = rel.lstrip("/")
+
+        remote_abs = f"{st.remote_workdir}/{rel}"
+        local_dest = self._project_dir / rel
+        local_dest.parent.mkdir(parents=True, exist_ok=True)
+
+        sock = mux_socket(self._host)
+        subprocess.run(
+            [
+                "scp",
+                "-o", f"ControlPath={sock}",
+                "-r",
+                f"{self._host}:{remote_abs}",
+                str(local_dest),
+            ],
+            check=True,
+        )
+
+        # Count what we pulled for the return value
+        if local_dest.is_file():
+            return (1, local_dest.stat().st_size)
+        if local_dest.is_dir():
+            files = list(local_dest.rglob("*"))
+            file_count = sum(1 for f in files if f.is_file())
+            total = sum(f.stat().st_size for f in files if f.is_file())
+            return (file_count, total)
+        return (0, 0)
+
     def pull_file(self, src: str, dest: str) -> Path:
         container = self._ensure_container()
         host = self._host

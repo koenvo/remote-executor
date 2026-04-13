@@ -57,5 +57,11 @@ class Executor(ABC):
         """Copy a file from the environment to the local machine."""
 
     @abstractmethod
+    def sync_down(self, path: str) -> tuple[int, int]:
+        """Pull `path` (file or directory, relative to workdir or absolute)
+        from the remote environment back to the matching local project path.
+        Returns (files_pulled, bytes_pulled)."""
+
+    @abstractmethod
     def doctor(self) -> bool:
         """Run diagnostic checks. Returns True if all passed."""

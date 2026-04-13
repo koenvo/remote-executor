@@ -152,13 +152,13 @@ def sync_create(
     remote_host: str,
     remote_path: str,
     ignores: list[str],
-    mode: str = "two-way-safe",
+    mode: str = "one-way-safe",
 ) -> str:
     """Create a sync between local_path and remote_host:remote_path.
 
-    Default mode is `two-way-safe`: both sides can write, conflicts abort
-    rather than clobber. This gives the user the illusion of a single
-    `/workspace` that happens to have remote compute attached to it.
+    Default mode is `one-way-safe`: alpha→beta (laptop→remote). Changes on
+    the remote side don't propagate back automatically — use the executor's
+    `sync_down` to pull specific paths when needed.
 
     Returns the mutagen session ID.
     """

@@ -274,14 +274,8 @@ class ModalExecutor(Executor):
     ) -> int:
         sb = await self._ensure_sandbox_async()
 
-        # Push latest workspace files before executing
+        # Push latest workspace files before executing so local edits are live
         await self._push_workspace_async(sb)
-
-        # Drop a marker so we can find files modified during the exec and
-        # sync them back to the laptop afterwards. Gives the user a
-        # "same /workspace, different compute" experience.
-        marker = "/tmp/rex-exec-marker"
-        await sb.filesystem.write_text.aio(marker, "")
 
         full_cmd = command
         if cwd:
@@ -302,54 +296,7 @@ class ModalExecutor(Executor):
                 await on_line("stderr", text)
 
         await process.wait.aio()
-        exit_code = process.returncode
-
-        # Pull files that were created or modified during the exec
-        try:
-            await self._pull_changed_files(sb, marker)
-        except Exception as e:
-            if on_line is not None:
-                await on_line("stderr", f"[rex] post-exec sync failed: {e}")
-
-        return exit_code
-
-    async def _pull_changed_files(self, sb, marker: str) -> int:
-        """Find files under workdir that were modified after `marker` and
-        copy them back to the local project dir. Returns the count pulled."""
-        find_cmd = [
-            "find",
-            self.workdir,
-            "-type", "f",
-            "-newer", marker,
-            "-print0",
-        ]
-        proc = await sb.exec.aio(*find_cmd)
-        data = b""
-        async for chunk in proc.stdout:
-            data += chunk.encode() if isinstance(chunk, str) else chunk
-        await proc.wait.aio()
-
-        if not data:
-            return 0
-
-        remote_paths = [p for p in data.split(b"\x00") if p]
-        ignores = self._effective_ignores()
-        count = 0
-        for raw in remote_paths:
-            remote_path = raw.decode("utf-8", errors="replace")
-            if not remote_path.startswith(self.workdir + "/"):
-                continue
-            rel = Path(remote_path[len(self.workdir) + 1:])
-            if _should_ignore(rel, ignores):
-                continue
-            local_path = self._project_dir / rel
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                await sb.filesystem.copy_to_local.aio(remote_path, str(local_path))
-                count += 1
-            except Exception:
-                pass
-        return count
+        return process.returncode
 
     def pull_file(self, src: str, dest: str) -> Path:
         sb = self._ensure_sandbox()
@@ -362,6 +309,55 @@ class ModalExecutor(Executor):
 
         sb.filesystem.copy_to_local(src, str(local_dest))
         return local_dest
+
+    def sync_down(self, path: str) -> tuple[int, int]:
+        """Pull `path` (file or directory, relative to workdir) from the
+        sandbox back to the matching local project path."""
+        sb = self._ensure_sandbox()
+
+        rel = path
+        if path.startswith(self.workdir + "/"):
+            rel = path[len(self.workdir) + 1:]
+        elif path.startswith("/"):
+            raise ValueError(
+                f"Absolute path {path!r} is outside the workspace ({self.workdir}). "
+                "Use a path under workdir or a relative path."
+            )
+        rel = rel.lstrip("/")
+
+        remote_abs = f"{self.workdir}/{rel}"
+
+        # Discover whether it's a file or directory via find
+        proc = sb.exec("find", remote_abs, "-type", "f", "-print0")
+        data = b""
+        for chunk in proc.stdout:
+            data += chunk.encode() if isinstance(chunk, str) else chunk
+        proc.wait()
+
+        if not data:
+            return (0, 0)
+
+        remote_files = [p.decode("utf-8", errors="replace") for p in data.split(b"\x00") if p]
+        ignores = self._effective_ignores()
+
+        file_count = 0
+        byte_count = 0
+        for remote_file in remote_files:
+            if not remote_file.startswith(self.workdir + "/"):
+                continue
+            file_rel = Path(remote_file[len(self.workdir) + 1:])
+            if _should_ignore(file_rel, ignores):
+                continue
+            local_path = self._project_dir / file_rel
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                sb.filesystem.copy_to_local(remote_file, str(local_path))
+                file_count += 1
+                byte_count += local_path.stat().st_size
+            except Exception:
+                pass
+
+        return (file_count, byte_count)
 
     def doctor(self) -> bool:
         all_ok = True

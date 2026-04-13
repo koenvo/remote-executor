@@ -141,6 +141,41 @@ async def remote_bash(
 
 
 @mcp.tool()
+async def sync_down(path: str) -> str:
+    """Pull a file or directory from the remote workspace back to the local
+    project directory at the matching path.
+
+    Use this after running a command that produces output files you need to
+    inspect locally (segments, logs, generated configs, exported models, a
+    modified `pyproject.toml` after `uv add`, etc.). Local edits flow to the
+    remote automatically — only pull-back requires this explicit call.
+
+    `path` is relative to the workspace root (e.g. "out/seg_0002.ts" or
+    "out/" to grab the whole directory). Do NOT call this for files that
+    weren't created or modified by your command — it's a bandwidth cost.
+
+    Args:
+        path: Path inside /workspace (file or directory). Relative to workdir.
+    """
+    executor = _get_executor()
+    try:
+        count, size = executor.sync_down(path)
+        if count == 0:
+            return f"{path}: nothing pulled (path missing or all files ignored)"
+        return f"pulled {count} file(s), {_format_bytes(size)} from {path}"
+    except Exception as e:
+        return f"sync_down failed: {e}"
+
+
+def _format_bytes(n: int) -> str:
+    for unit in ["B", "KB", "MB", "GB"]:
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+@mcp.tool()
 async def pull(
     src: str,
     dest: str,

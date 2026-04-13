@@ -240,10 +240,13 @@ Do NOT try to stop or tear down the environment — that's user-controlled via `
 
 ## How the workspace sync works
 
-- The local project directory is mirrored to `{cfg.project.workdir}` inside the remote environment.
+File sync is **one-way: laptop → remote**. Local edits flow to `{cfg.project.workdir}` automatically, but the reverse does not.
+
 - File edits via `Read` / `Edit` / `Write` are visible to the next `remote_bash` call without a rebuild.
 - Changes to `Dockerfile` or system dependencies require `remote-executor rebuild` — ask the user to run it.
-- To retrieve files from environment-local volumes (e.g. output directories that aren't part of the sync), use `mcp__remote-executor__pull`.
+- **If a command produces files you want locally** (output segments, logs, a modified `pyproject.toml` after `uv add`, generated configs, exported models), call `mcp__remote-executor__sync_down <path>` afterwards. The path is relative to the workspace root (e.g. `out/`, `out/seg_0002.ts`, `pyproject.toml`).
+- **Don't** call `sync_down` for things you didn't create — it's a bandwidth cost. Only pull what you need to inspect locally.
+- To retrieve files from environment-local volumes that aren't part of the workspace, use `mcp__remote-executor__pull`.
 
 ## Switching profiles
 

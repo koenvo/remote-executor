@@ -214,6 +214,12 @@ description: Use when running commands that need the project's runtime environme
 
 This project runs on **{backend_desc}** (active profile: `{profile_name}`). The local machine does not have the architecture this project needs, so shell commands that touch the toolchain must run on the remote environment.
 
+## Before your first remote command
+
+Call **`mcp__remote-executor__ensure_up`** once at the start of a session (or before the first `remote_bash` call). It's idempotent — free if the environment is already running, and provisions it otherwise. A cold start can take 20–120 seconds; a warm start is instant.
+
+Do NOT try to stop or tear down the environment — that's user-controlled via `remote-executor down`.
+
 ## Which tool to use
 
 **Use `mcp__remote-executor__remote_bash`** for any command that needs the remote environment:

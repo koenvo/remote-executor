@@ -21,6 +21,17 @@ class Executor(ABC):
         """Provision the environment: sync files, build image, start container/sandbox."""
 
     @abstractmethod
+    def is_up(self) -> bool:
+        """True if the remote environment is currently running and reachable."""
+
+    def ensure_up(self) -> bool:
+        """Idempotent: if not up, call up(). Returns True if we had to start it."""
+        if self.is_up():
+            return False
+        self.up()
+        return True
+
+    @abstractmethod
     def down(self) -> None:
         """Tear down the environment."""
 

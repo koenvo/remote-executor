@@ -41,6 +41,17 @@ class SshDockerExecutor(Executor):
     def workdir(self) -> str:
         return self._cfg.project.workdir
 
+    def is_up(self) -> bool:
+        st = state.load(self._state_key)
+        if not st.container_name:
+            return False
+        try:
+            if not ssh.mux_alive(self._host):
+                return False
+            return docker.container_running(self._host, st.container_name)
+        except (subprocess.CalledProcessError, OSError):
+            return False
+
     def _resolve_remote_workdir(self) -> str:
         remote_root = self._profile.sync_remote_root
         if remote_root.startswith("~"):

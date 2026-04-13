@@ -153,7 +153,22 @@ class ModalExecutor(Executor):
                 result.append((local_file, remote_path))
         return result
 
+    def is_up(self) -> bool:
+        """True if a sandbox is running and reachable."""
+        sb = self._reconnect_sandbox()
+        if sb is None:
+            return False
+        try:
+            # poll() returns None if still running, exit code if finished
+            return sb.poll() is None
+        except Exception:
+            return False
+
     def up(self) -> None:
+        if self.is_up():
+            console.print(f"[dim]Sandbox already running (id={self._sandbox.object_id})[/]")
+            return
+
         modal = _import_modal()
         modal.enable_output()
 

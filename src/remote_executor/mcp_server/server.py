@@ -40,6 +40,29 @@ def _get_executor() -> Executor:
 
 
 @mcp.tool()
+async def ensure_up() -> str:
+    """Ensure the remote execution environment is running.
+
+    Idempotent — free to call before the first `remote_bash` of a session.
+    If the sandbox/container is already running, returns immediately.
+    Otherwise provisions it (image build, sandbox start, initial workspace
+    push). A cold start can take 20–120 seconds depending on backend and
+    whether the image is cached.
+
+    Call this proactively at the start of a session if you know you'll need
+    the remote environment. Do NOT call `down` — that's user-controlled.
+    """
+    executor = _get_executor()
+    if executor.is_up():
+        return "already running"
+    try:
+        executor.up()
+        return "started"
+    except Exception as e:
+        return f"failed to start: {e}"
+
+
+@mcp.tool()
 async def remote_bash(
     command: str,
     cwd: str | None = None,

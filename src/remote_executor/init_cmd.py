@@ -60,6 +60,7 @@ def run_init(
             "Which backend?",
             choices=["modal", "ssh-docker"],
             default="modal",
+            case_sensitive=False,
         )
 
     # --- build the starter profile ---
@@ -79,9 +80,15 @@ def run_init(
                 "Modal GPU type",
                 choices=["T4", "L4", "L40S", "A10G", "A100", "H100", "H200"],
                 default="T4",
+                case_sensitive=False,
             )
-        profile_name = f"modal-{gpu.lower()}"
-        profile = Profile(backend="modal", gpu=gpu)
+        # Normalize to Modal's canonical casing (e.g. l40s → L40S)
+        gpu_canonical = {
+            "t4": "T4", "l4": "L4", "l40s": "L40S",
+            "a10g": "A10G", "a100": "A100", "h100": "H100", "h200": "H200",
+        }.get(gpu.lower(), gpu)
+        profile_name = f"modal-{gpu_canonical.lower()}"
+        profile = Profile(backend="modal", gpu=gpu_canonical)
     else:
         raise typer.BadParameter(f"Unknown backend: {backend}. Use 'ssh-docker' or 'modal'.")
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Cap parallel file uploads so we don't overwhelm Modal's API
@@ -163,8 +164,33 @@ class ModalExecutor(Executor):
         return snapshot
 
     def _push_workspace(self, sb) -> int:
-        """Push all project files into the sandbox (sync wrapper around the async version)."""
-        return asyncio.run(self._push_workspace_async(sb))
+        """Push all project files into the sandbox in parallel (sync version
+        for `up()`). Uses a thread pool so it's safe to call from any context,
+        including from inside an existing event loop (e.g. when the MCP
+        `ensure_up` tool calls `executor.up()` from an async handler).
+        """
+        ignores = self._effective_ignores()
+        files = self._walk_files(ignores)
+        if not files:
+            return 0
+
+        snapshot = self._snapshot_mtimes(files)
+        if self._last_push_mtimes == snapshot:
+            return 0
+
+        def push_one(args: tuple[Path, str]) -> bool:
+            local_file, remote_path = args
+            try:
+                sb.filesystem.copy_from_local(str(local_file), remote_path)
+                return True
+            except Exception:
+                return False
+
+        with ThreadPoolExecutor(max_workers=_PUSH_CONCURRENCY) as ex:
+            results = list(ex.map(push_one, files))
+        count = sum(1 for ok in results if ok)
+        self._last_push_mtimes = snapshot
+        return count
 
     async def _push_workspace_async(self, sb) -> int:
         """Push all project files into the sandbox in parallel.

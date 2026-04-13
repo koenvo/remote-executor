@@ -13,6 +13,9 @@ import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+# Cap parallel file uploads so we don't overwhelm Modal's API
+_PUSH_CONCURRENCY = 16
+
 from rich.console import Console
 from rich.table import Table
 
@@ -89,6 +92,9 @@ class ModalExecutor(Executor):
         self._app_name = cfg.container_name(project_dir, profile_name)
         self._state_key = f"modal:{profile_name}"
         self._sandbox = None
+        # mtime snapshot from the last successful push — used to skip
+        # re-pushing identical workspaces between consecutive exec calls.
+        self._last_push_mtimes: dict[str, float] | None = None
 
     @property
     def workdir(self) -> str:
@@ -146,28 +152,51 @@ class ModalExecutor(Executor):
         """DEFAULT_IGNORE + any plain dir names extracted from profile.sync_ignore."""
         return DEFAULT_IGNORE | _extra_ignores_from_profile(self._profile.sync_ignore)
 
-    def _push_workspace(self, sb) -> int:
-        """Push all project files into the sandbox at /workspace (sync version for up())."""
-        ignores = self._effective_ignores()
-        count = 0
-        for local_file, remote_path in self._walk_files(ignores):
+    def _snapshot_mtimes(self, files: list[tuple[Path, str]]) -> dict[str, float]:
+        """Capture mtimes for the given local files, keyed by absolute path."""
+        snapshot: dict[str, float] = {}
+        for local_file, _ in files:
             try:
-                sb.filesystem.copy_from_local(str(local_file), remote_path)
-                count += 1
-            except Exception:
+                snapshot[str(local_file)] = local_file.stat().st_mtime
+            except OSError:
                 pass
-        return count
+        return snapshot
+
+    def _push_workspace(self, sb) -> int:
+        """Push all project files into the sandbox (sync wrapper around the async version)."""
+        return asyncio.run(self._push_workspace_async(sb))
 
     async def _push_workspace_async(self, sb) -> int:
-        """Push all project files into the sandbox (async version for exec_command())."""
+        """Push all project files into the sandbox in parallel.
+
+        Skips entirely if mtimes haven't changed since the last successful push.
+        Caps concurrency at _PUSH_CONCURRENCY so we don't overwhelm Modal's API.
+        """
         ignores = self._effective_ignores()
-        count = 0
-        for local_file, remote_path in self._walk_files(ignores):
-            try:
-                await sb.filesystem.copy_from_local.aio(str(local_file), remote_path)
-                count += 1
-            except Exception:
-                pass
+        files = self._walk_files(ignores)
+        if not files:
+            return 0
+
+        # Skip if nothing changed since the last push
+        snapshot = self._snapshot_mtimes(files)
+        if self._last_push_mtimes == snapshot:
+            return 0
+
+        semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+        async def push_one(local_file: Path, remote_path: str) -> bool:
+            async with semaphore:
+                try:
+                    await sb.filesystem.copy_from_local.aio(str(local_file), remote_path)
+                    return True
+                except Exception:
+                    return False
+
+        results = await asyncio.gather(
+            *(push_one(lf, rp) for lf, rp in files)
+        )
+        count = sum(1 for ok in results if ok)
+        self._last_push_mtimes = snapshot
         return count
 
     def _walk_files(self, ignores: set[str]) -> list[tuple[Path, str]]:
